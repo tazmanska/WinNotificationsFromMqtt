@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36109.1 d17.14
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WinNotificationsFromMqtt.App", "WinNotificationsFromMqtt.App\WinNotificationsFromMqtt.App.csproj", "{5499336F-A852-4F93-AF82-6D407BE56C44}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{5499336F-A852-4F93-AF82-6D407BE56C44}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5499336F-A852-4F93-AF82-6D407BE56C44}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5499336F-A852-4F93-AF82-6D407BE56C44}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5499336F-A852-4F93-AF82-6D407BE56C44}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {C7F61E12-4779-44CC-B54E-896F076CA271}
+	EndGlobalSection
+EndGlobal
