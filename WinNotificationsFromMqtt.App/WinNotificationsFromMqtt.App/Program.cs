@@ -5,6 +5,7 @@ using MQTTnet.Client;
 using System;
 using System.Drawing;
 using System.IO;
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -88,14 +89,12 @@ namespace MqttTrayNotifier
 
             mqttClient.ConnectedAsync += async e =>
             {
-                ShowNotification("Połączono z MQTT", e.ConnectResult.ToString(), null);
-
                 var s = await mqttClient.SubscribeAsync("notifications/global");
             };
 
             mqttClient.DisconnectedAsync += async e =>
             {
-                ShowNotification("Rozłącozno z MQTT", e.Exception?.ToString(), null);
+                ShowNotification("Rozłączono z MQTT", e.Exception?.ToString(), null);
             };
 
             try
@@ -119,7 +118,15 @@ namespace MqttTrayNotifier
             {
                 try
                 {
-                    builder.AddInlineImage(new Uri(imageUrl));
+                    var filePath = Path.GetTempPath();
+                    filePath = Path.Combine(filePath, "ha_notification_image.jpg");
+
+                    using (var client = new WebClient())
+                    {
+                        client.DownloadFile(imageUrl, filePath);
+                    }
+
+                    builder.AddInlineImage(new Uri(filePath));
                 }
                 catch
                 {
