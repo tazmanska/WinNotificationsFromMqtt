@@ -8,6 +8,7 @@ using System.IO;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Windows.Devices.Geolocation;
@@ -89,14 +90,24 @@ namespace MqttTrayNotifier
 
             mqttClient.ConnectedAsync += async e =>
             {
+                ShowNotification("Połączono z MQTT", null, null);
                 var s = await mqttClient.SubscribeAsync("notifications/global");
             };
 
             mqttClient.DisconnectedAsync += async e =>
             {
                 ShowNotification("Rozłączono z MQTT", e.Exception?.ToString(), null);
+
+                await Task.Delay(TimeSpan.FromSeconds(5));
+
+                await ConnectToMqtt(options);
             };
 
+            await ConnectToMqtt(options);
+        }
+
+        private static async Task ConnectToMqtt(MqttClientOptions options)
+        {
             try
             {
                 await mqttClient.ConnectAsync(options);
@@ -104,15 +115,20 @@ namespace MqttTrayNotifier
             catch (Exception ex)
             {
                 ShowNotification("Błąd połączenia", ex.Message, null);
+
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(5000);
+                    await ConnectToMqtt(options);
+                });
             }
         }
-
 
         static void ShowNotification(string title, string message, string imageUrl)
         {
             ToastContentBuilder builder = new ToastContentBuilder()
-                .AddText(title)
-                .AddText(message);
+                .AddText(title ?? "")
+                .AddText(message ?? "");
 
             if (!string.IsNullOrWhiteSpace(imageUrl))
             {
