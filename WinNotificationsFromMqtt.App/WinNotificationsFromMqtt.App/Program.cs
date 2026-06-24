@@ -1,17 +1,15 @@
-﻿using Microsoft.Toolkit.Uwp.Notifications;
+using Microsoft.Toolkit.Uwp.Notifications;
 
 using MQTTnet;
 using MQTTnet.Client;
 using System;
 using System.Drawing;
 using System.IO;
-using System.Net;
-using System.Text;
+using System.Net.Http;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using Windows.Devices.Geolocation;
 using WinNotificationsFromMqtt.App;
 
 namespace MqttTrayNotifier
@@ -21,12 +19,22 @@ namespace MqttTrayNotifier
         static NotifyIcon trayIcon;
         static IMqttClient mqttClient;
         static AppConfiguration configuration;
+        static SynchronizationContext uiContext;
+        static readonly HttpClient httpClient = new HttpClient();
+        static (string title, string message, string imageUrl) lastNotification;
+        static MqttClientOptions mqttOptions;
 
         [STAThread]
         static void Main()
         {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
+
+            uiContext = new System.Windows.Forms.WindowsFormsSynchronizationContext();
+            SynchronizationContext.SetSynchronizationContext(uiContext);
+
+            // Rejestracja OnActivated tylko raz
+            ToastNotificationManagerCompat.OnActivated += toastArgs => { };
 
             configuration = JsonSerializer.Deserialize<AppConfiguration>(File.ReadAllText("AppConfiguration.json"));
 
@@ -39,6 +47,23 @@ namespace MqttTrayNotifier
                 {
                     Items =
                     {
+                        new ToolStripMenuItem("Pokaż ostatnie powiadomienie", null, (s, e) =>
+                        {
+                            var (title, message, imageUrl) = lastNotification;
+                            if (title == null)
+                                trayIcon.ShowBalloonTip(3000, "Brak powiadomień", "Nie odebrano jeszcze żadnego powiadomienia.", ToolTipIcon.Info);
+                            else
+                                ShowNotification(title, message, imageUrl);
+                        }),
+                        new ToolStripMenuItem("Reconnect", null, (s, e) =>
+                        {
+                            Task.Run(async () =>
+                            {
+                                try { await mqttClient.DisconnectAsync(); } catch { }
+                                await ConnectToMqtt(mqttOptions);
+                            });
+                        }),
+                        new ToolStripSeparator(),
                         new ToolStripMenuItem("Exit", null, (s, e) =>
                         {
                             trayIcon.Visible = false;
@@ -51,7 +76,7 @@ namespace MqttTrayNotifier
 
             Task.Run(() => ConnectMqtt());
 
-            Application.Run(); // Keeps the app alive in tray
+            Application.Run();
         }
 
         static async Task ConnectMqtt()
@@ -59,7 +84,7 @@ namespace MqttTrayNotifier
             var factory = new MqttFactory();
             mqttClient = factory.CreateMqttClient();
 
-            var options = new MqttClientOptionsBuilder()
+            mqttOptions = new MqttClientOptionsBuilder()
                 .WithClientId(configuration.ClientId)
                 .WithTcpServer(configuration.Url, configuration.Port)
                 .WithCredentials(configuration.UserName, configuration.Password)
@@ -78,10 +103,12 @@ namespace MqttTrayNotifier
                     string message = json.RootElement.GetProperty("message").GetString();
                     string imageUrl = json.RootElement.GetProperty("imageUrl").GetString();
 
+                    lastNotification = (title, message, imageUrl);
                     ShowNotification(title, message, imageUrl);
                 }
                 catch
                 {
+                    lastNotification = ("MQTT Wiadomość", payload, null);
                     ShowNotification("MQTT Wiadomość", payload, null);
                 }
 
@@ -90,20 +117,38 @@ namespace MqttTrayNotifier
 
             mqttClient.ConnectedAsync += async e =>
             {
+                SetTrayStatus($"Połączono z {configuration.Url}:{configuration.Port}");
                 ShowNotification("Połączono z MQTT", null, null);
-                var s = await mqttClient.SubscribeAsync("notifications/global");
+                await mqttClient.SubscribeAsync("notifications/global");
             };
 
             mqttClient.DisconnectedAsync += async e =>
             {
-                ShowNotification("Rozłączono z MQTT", e.Exception?.ToString(), null);
-
+                SetTrayStatus("Rozłączono");
+                ShowNotification("Rozłączono z MQTT", e.Exception?.Message, null);
                 await Task.Delay(TimeSpan.FromSeconds(5));
-
-                await ConnectToMqtt(options);
+                await ConnectToMqtt(mqttOptions);
             };
 
-            await ConnectToMqtt(options);
+            Microsoft.Win32.SystemEvents.PowerModeChanged += async (s, e) =>
+            {
+                if (e.Mode == Microsoft.Win32.PowerModes.Resume)
+                {
+                    try { await mqttClient.DisconnectAsync(); } catch { }
+                    await Task.Delay(TimeSpan.FromSeconds(3));
+                    await ConnectToMqtt(mqttOptions);
+                }
+            };
+
+            SetTrayStatus("Łączenie...");
+            await ConnectToMqtt(mqttOptions);
+        }
+
+        static void SetTrayStatus(string status)
+        {
+            // NotifyIcon.Text ma limit 63 znaków, Shell_NotifyIcon nie wymaga wątku UI
+            var text = $"MQTT Notifier — {status}";
+            trayIcon.Text = text.Length > 63 ? text[..63] : text;
         }
 
         private static async Task ConnectToMqtt(MqttClientOptions options)
@@ -114,51 +159,49 @@ namespace MqttTrayNotifier
             }
             catch (Exception ex)
             {
+                SetTrayStatus($"Błąd: {ex.Message}");
                 ShowNotification("Błąd połączenia", ex.Message, null);
 
                 _ = Task.Run(async () =>
                 {
                     await Task.Delay(5000);
-                    await ConnectToMqtt(options);
+                    await ConnectToMqtt(mqttOptions);
                 });
             }
         }
 
         static void ShowNotification(string title, string message, string imageUrl)
         {
-            ToastContentBuilder builder = new ToastContentBuilder()
-                .AddText(title ?? "")
-                .AddText(message ?? "");
-
-            if (!string.IsNullOrWhiteSpace(imageUrl))
+            uiContext.Post(_ =>
             {
                 try
                 {
-                    var filePath = Path.GetTempPath();
-                    filePath = Path.Combine(filePath, "ha_notification_image.jpg");
+                    ToastContentBuilder builder = new ToastContentBuilder()
+                        .AddText(title ?? "")
+                        .AddText(message ?? "");
 
-                    using (var client = new WebClient())
+                    if (!string.IsNullOrWhiteSpace(imageUrl))
                     {
-                        client.DownloadFile(imageUrl, filePath);
+                        try
+                        {
+                            var filePath = Path.Combine(Path.GetTempPath(), "ha_notification_image.jpg");
+                            var bytes = httpClient.GetByteArrayAsync(imageUrl).GetAwaiter().GetResult();
+                            File.WriteAllBytes(filePath, bytes);
+                            builder.AddInlineImage(new Uri(filePath));
+                        }
+                        catch
+                        {
+                            builder.AddText("[Błąd ładowania obrazka]");
+                        }
                     }
 
-                    builder.AddInlineImage(new Uri(filePath));
+                    builder.Show();
                 }
-                catch
+                catch (Exception ex)
                 {
-                    builder.AddText("[Błąd ładowania obrazka]");
+                    trayIcon.ShowBalloonTip(5000, title ?? "", $"{message}\n({ex.Message})", ToolTipIcon.Info);
                 }
-            }
-
-            // Konieczna rejestracja AUMID — dowolna unikalna nazwa
-            ToastNotificationManagerCompat.OnActivated += toastArgs =>
-            {
-                // Można tu dodać akcję po kliknięciu
-            };
-
-            ToastNotificationManagerCompat.History.Clear(); // (opcjonalnie: czyści poprzednie)
-            builder.Show();
+            }, null);
         }
-
     }
 }
