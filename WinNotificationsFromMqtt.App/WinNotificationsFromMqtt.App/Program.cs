@@ -23,6 +23,7 @@ namespace MqttTrayNotifier
         static readonly HttpClient httpClient = new HttpClient();
         static (string title, string message, string imageUrl) lastNotification;
         static MqttClientOptions mqttOptions;
+        static readonly SemaphoreSlim connectLock = new SemaphoreSlim(1, 1);
 
         [STAThread]
         static void Main()
@@ -33,7 +34,6 @@ namespace MqttTrayNotifier
             uiContext = new System.Windows.Forms.WindowsFormsSynchronizationContext();
             SynchronizationContext.SetSynchronizationContext(uiContext);
 
-            // Rejestracja OnActivated tylko raz
             ToastNotificationManagerCompat.OnActivated += toastArgs => { };
 
             configuration = JsonSerializer.Deserialize<AppConfiguration>(File.ReadAllText("AppConfiguration.json"));
@@ -57,11 +57,7 @@ namespace MqttTrayNotifier
                         }),
                         new ToolStripMenuItem("Reconnect", null, (s, e) =>
                         {
-                            Task.Run(async () =>
-                            {
-                                try { await mqttClient.DisconnectAsync(); } catch { }
-                                await ConnectToMqtt(mqttOptions);
-                            });
+                            Task.Run(() => ForceReconnect());
                         }),
                         new ToolStripSeparator(),
                         new ToolStripMenuItem("Exit", null, (s, e) =>
@@ -124,38 +120,45 @@ namespace MqttTrayNotifier
 
             mqttClient.DisconnectedAsync += async e =>
             {
+                // Ignoruj rozłączenia wymuszone ręcznie (ForceReconnect sam zarządza reconnectem)
+                if (e.ReasonCode == MqttClientDisconnectOptionsReasonCode.NormalDisconnection)
+                    return;
+
                 SetTrayStatus("Rozłączono");
                 ShowNotification("Rozłączono z MQTT", e.Exception?.Message, null);
                 await Task.Delay(TimeSpan.FromSeconds(5));
-                await ConnectToMqtt(mqttOptions);
+                await ConnectToMqtt();
             };
 
-            Microsoft.Win32.SystemEvents.PowerModeChanged += async (s, e) =>
+            Microsoft.Win32.SystemEvents.PowerModeChanged += (s, e) =>
             {
                 if (e.Mode == Microsoft.Win32.PowerModes.Resume)
-                {
-                    try { await mqttClient.DisconnectAsync(); } catch { }
-                    await Task.Delay(TimeSpan.FromSeconds(3));
-                    await ConnectToMqtt(mqttOptions);
-                }
+                    Task.Run(() => ForceReconnect());
             };
 
             SetTrayStatus("Łączenie...");
-            await ConnectToMqtt(mqttOptions);
+            await ConnectToMqtt();
         }
 
-        static void SetTrayStatus(string status)
+        static async Task ForceReconnect()
         {
-            // NotifyIcon.Text ma limit 63 znaków, Shell_NotifyIcon nie wymaga wątku UI
-            var text = $"MQTT Notifier — {status}";
-            trayIcon.Text = text.Length > 63 ? text[..63] : text;
+            SetTrayStatus("Łączenie...");
+            try { await mqttClient.DisconnectAsync(); } catch { }
+            await Task.Delay(TimeSpan.FromSeconds(3));
+            await ConnectToMqtt();
         }
 
-        private static async Task ConnectToMqtt(MqttClientOptions options)
+        static async Task ConnectToMqtt()
         {
+            if (!await connectLock.WaitAsync(0))
+                return; // inna próba połączenia już w toku
+
             try
             {
-                await mqttClient.ConnectAsync(options);
+                if (mqttClient.IsConnected)
+                    return;
+
+                await mqttClient.ConnectAsync(mqttOptions);
             }
             catch (Exception ex)
             {
@@ -165,9 +168,19 @@ namespace MqttTrayNotifier
                 _ = Task.Run(async () =>
                 {
                     await Task.Delay(5000);
-                    await ConnectToMqtt(mqttOptions);
+                    await ConnectToMqtt();
                 });
             }
+            finally
+            {
+                connectLock.Release();
+            }
+        }
+
+        static void SetTrayStatus(string status)
+        {
+            var text = $"MQTT Notifier — {status}";
+            trayIcon.Text = text.Length > 63 ? text[..63] : text;
         }
 
         static void ShowNotification(string title, string message, string imageUrl)
